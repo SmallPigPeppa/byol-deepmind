@@ -236,6 +236,72 @@ class EvalExperiment:
         """Build optimizer from config."""
         return optax.sgd(learning_rate, **self._optimizer_config)
 
+    def _initialize_train(self, rng):
+        """BYOL's _ExperimentState initialization.
+
+        Args:
+          rng: random number generator used to initialize parameters. If working in
+            a multi device setup, this need to be a ShardedArray.
+          dummy_input: a dummy image, used to compute intermediate outputs shapes.
+
+        Returns:
+          Initial EvalExperiment state.
+
+        Raises:
+          RuntimeError: invalid or empty checkpoint.
+        """
+        self._train_input = acme_utils.prefetch(self._build_train_input())
+
+        # Check we haven't already restored params
+        if self._experiment_state is None:
+
+            inputs = next(self._train_input)
+
+            if self._checkpoint_to_evaluate is not None:
+                # Load params from checkpoint
+                checkpoint_data = checkpointing.load_checkpoint(
+                    self._checkpoint_to_evaluate)
+                if checkpoint_data is None:
+                    raise RuntimeError('Invalid checkpoint.')
+                backbone_params = checkpoint_data['experiment_state'].online_params
+                backbone_state = checkpoint_data['experiment_state'].online_state
+                backbone_params = helpers.bcast_local_devices(backbone_params)
+                backbone_state = helpers.bcast_local_devices(backbone_state)
+            else:
+                if not self._allow_train_from_scratch:
+                    raise ValueError(
+                        'No checkpoint specified, but `allow_train_from_scratch` '
+                        'set to False')
+                # Initialize with random parameters
+                logging.info(
+                    'No checkpoint specified, initializing the networks from scratch '
+                    '(dry run mode)')
+                backbone_params, backbone_state = jax.pmap(
+                    functools.partial(self.forward_backbone.init, is_training=True),
+                    axis_name='i')(rng=rng, inputs=inputs)
+
+            init_experiment = jax.pmap(self._make_initial_state, axis_name='i')
+
+            # Init uses the same RNG key on all hosts+devices to ensure everyone
+            # computes the same initial state and parameters.
+            init_rng = jax.random.PRNGKey(self._random_seed)
+            init_rng = helpers.bcast_local_devices(init_rng)
+            self._experiment_state = init_experiment(
+                rng=init_rng,
+                dummy_input=inputs,
+                backbone_params=backbone_params,
+                backbone_state=backbone_state)
+
+            # Clear the backbone optimizer's state when the backbone is frozen.
+            if self._freeze_backbone:
+                self._experiment_state = _EvalExperimentState(
+                    backbone_params=self._experiment_state.backbone_params,
+                    classif_params=self._experiment_state.classif_params,
+                    backbone_state=self._experiment_state.backbone_state,
+                    backbone_opt_state=None,
+                    classif_opt_state=self._experiment_state.classif_opt_state,
+                )
+
     def _loss_fn(
             self,
             backbone_params: hk.Params,
@@ -281,7 +347,6 @@ class EvalExperiment:
             self,
             images,
             backbone_params: hk.Params,
-            classif_params: hk.Params,
             backbone_state: hk.State,
     ) -> LogsDict:
         """Evaluates a batch."""
@@ -295,6 +360,16 @@ class EvalExperiment:
 
 
     def save_embedding(self, batch_size):
+
+        checkpoint_data = checkpointing.load_checkpoint(
+            self._checkpoint_to_evaluate)
+        if checkpoint_data is None:
+            raise RuntimeError('Invalid checkpoint.')
+        backbone_params = checkpoint_data['experiment_state'].online_params
+        backbone_state = checkpoint_data['experiment_state'].online_state
+        backbone_params = helpers.bcast_local_devices(backbone_params)
+        backbone_state = helpers.bcast_local_devices(backbone_state)
+
         import tensorflow as tf
         import os
         IMG_SIZE = 224
@@ -325,9 +400,9 @@ class EvalExperiment:
         train_dataset = train_dataset.map(lambda x, y: (x / 255., y))
         test_dataset = test_dataset.map(lambda x, y: (x / 255., y))
 
-        backbone_params = helpers.get_first(self._experiment_state.backbone_params)
-        classif_params = helpers.get_first(self._experiment_state.classif_params)
-        backbone_state = helpers.get_first(self._experiment_state.backbone_state)
+        # backbone_params = helpers.get_first(self._experiment_state.backbone_params)
+        # classif_params = helpers.get_first(self._experiment_state.classif_params)
+        # backbone_state = helpers.get_first(self._experiment_state.backbone_state)
 
         x_train = np.empty((0, 2048))
         y_train = np.empty((0))
@@ -349,7 +424,6 @@ class EvalExperiment:
             embeddings_i = self.eval_batch_jit(
                 imgs,
                 backbone_params,
-                classif_params,
                 backbone_state,
             )
             y_i = labels.numpy()

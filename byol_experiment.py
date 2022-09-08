@@ -29,13 +29,13 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 
-from byol.utils import augmentations
-from byol.utils import checkpointing
-from byol.utils import dataset
-from byol.utils import helpers
-from byol.utils import networks
-from byol.utils import optimizers
-from byol.utils import schedules
+from utils import augmentations
+from utils import checkpointing
+from utils import dataset
+from utils import helpers
+from utils import networks
+from utils import optimizers
+from utils import schedules
 
 
 # Type declarations.

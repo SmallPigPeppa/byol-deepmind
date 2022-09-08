@@ -61,6 +61,7 @@ def train_loop(experiment_class: Experiment, config: Mapping[Text, Any]):
     step = 0
 
     host_id = jax.host_id()
+    last_logging = time.time()
     if config['checkpointing_config']['use_checkpointing']:
         checkpoint_data = experiment.load_checkpoint()
         if checkpoint_data is None:
@@ -69,7 +70,7 @@ def train_loop(experiment_class: Experiment, config: Mapping[Text, Any]):
             step, rng = checkpoint_data
 
     local_device_count = jax.local_device_count()
-    while step < 1:
+    while step < config['max_steps']:
         step_rng, rng = tuple(jax.random.split(rng))
         # Broadcast the random seeds across the devices
         step_rng_device = jax.random.split(step_rng, num=jax.device_count())
@@ -78,9 +79,19 @@ def train_loop(experiment_class: Experiment, config: Mapping[Text, Any]):
         step_device = np.broadcast_to(step, [local_device_count])
 
         # Perform a training step and get scalars to log.
-        experiment.step(global_step=step_device, rng=step_rng_device)
-        experiment.save_train_embeddings(global_step=step_device, rng=step_rng_device)
+        scalars = experiment.step(global_step=step_device, rng=step_rng_device)
 
+        # Checkpointing and logging.
+        if config['checkpointing_config']['use_checkpointing']:
+            experiment.save_checkpoint(step, rng)
+            current_time = time.time()
+            if current_time - last_logging > FLAGS.log_tensors_interval:
+                logging.info('Step %d: %s', step, scalars)
+                last_logging = current_time
+        step += 1
+    logging.info('Saving final checkpoint')
+    logging.info('Step %d: %s', step, scalars)
+    experiment.save_checkpoint(step, rng)
 
 
 def eval_loop(experiment_class: Experiment, config: Mapping[Text, Any]):
@@ -96,17 +107,26 @@ def eval_loop(experiment_class: Experiment, config: Mapping[Text, Any]):
     """
     experiment = experiment_class(**config)
     last_evaluated_step = -1
-    checkpoint_data = experiment.load_checkpoint()
-    if checkpoint_data is None:
-        logging.info('No checkpoint found. Waiting for 10s.')
-        time.sleep(10)
-    step, _ = checkpoint_data
-    host_id = jax.host_id()
-    local_device_count = jax.local_device_count()
-    step_device = np.broadcast_to(step, [local_device_count])
-    scalars = experiment.evaluate(global_step=step_device)
-    experiment.save_eval_embeddings(global_step=step_device)
-
+    while True:
+        checkpoint_data = experiment.load_checkpoint()
+        if checkpoint_data is None:
+            logging.info('No checkpoint found. Waiting for 10s.')
+            time.sleep(10)
+            continue
+        step, _ = checkpoint_data
+        if step <= last_evaluated_step:
+            logging.info('Checkpoint at step %d already evaluated, waiting.', step)
+            time.sleep(10)
+            continue
+        host_id = jax.host_id()
+        local_device_count = jax.local_device_count()
+        step_device = np.broadcast_to(step, [local_device_count])
+        scalars = experiment.evaluate(global_step=step_device)
+        if host_id == 0:  # Only perform logging in one host.
+            logging.info('Evaluation at step %d: %s', step, scalars)
+        last_evaluated_step = step
+        if last_evaluated_step >= config['max_steps']:
+            return
 
 
 def main(_):

@@ -406,11 +406,13 @@ class EvalExperiment:
         x_train = np.empty((0, 2048))
         y_train = np.empty((0))
         for (imgs, labels) in tqdm(train_dataset):
-            embeddings_i = self.eval_batch_jit(
-                imgs,
-                backbone_params,
-                backbone_state,
-            )
+            # embeddings_i = self.eval_batch_jit(
+            #     imgs,
+            #     backbone_params,
+            #     backbone_state,
+            # )
+            embeddings_i, backbone_state = self.forward_backbone.apply(
+                backbone_params, backbone_state, imgs, is_training=False)
             y_i = labels.numpy()
             x_i = embeddings_i.numpy()
             x_train = np.append(x_train, x_i, axis=0)

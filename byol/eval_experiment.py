@@ -298,7 +298,7 @@ class EvalExperiment:
         import tensorflow as tf
         import os
         IMG_SIZE = 224
-        data_path = "/share/datasets/torch_ds/imagenet-subset"
+        data_path = "/share/wenzhuoliu/datasets/torch_ds/imagenet-subset"
         dataset_name="imagenet-subset"
         lr=0.0001
         epochs=100

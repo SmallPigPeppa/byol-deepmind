@@ -22,7 +22,6 @@ import functools
 from typing import Any, Generator, Mapping, NamedTuple, Text, Tuple, Union
 
 from absl import logging
-from acme.jax import utils as acme_utils
 import haiku as hk
 import jax
 import jax.numpy as jnp

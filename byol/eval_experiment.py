@@ -366,8 +366,8 @@ class EvalExperiment:
             raise RuntimeError('Invalid checkpoint.')
         backbone_params = checkpoint_data['experiment_state'].online_params
         backbone_state = checkpoint_data['experiment_state'].online_state
-        backbone_params = helpers.bcast_local_devices(backbone_params)
-        backbone_state = helpers.bcast_local_devices(backbone_state)
+        # backbone_params = helpers.bcast_local_devices(backbone_params)
+        # backbone_state = helpers.bcast_local_devices(backbone_state)
 
         import tensorflow as tf
         import os

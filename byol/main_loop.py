@@ -82,7 +82,6 @@ def train_loop(experiment_class: Experiment, config: Mapping[Text, Any]):
         experiment.save_train_embeddings(global_step=step_device, rng=step_rng_device)
 
 
-
 def eval_loop(experiment_class: Experiment, config: Mapping[Text, Any]):
     """The main evaluation loop.
 
@@ -95,18 +94,18 @@ def eval_loop(experiment_class: Experiment, config: Mapping[Text, Any]):
       config: the experiment config.
     """
     experiment = experiment_class(**config)
-    last_evaluated_step = -1
-    checkpoint_data = experiment.load_checkpoint()
-    if checkpoint_data is None:
-        logging.info('No checkpoint found. Waiting for 10s.')
-        time.sleep(10)
-    step, _ = checkpoint_data
-    host_id = jax.host_id()
-    local_device_count = jax.local_device_count()
-    step_device = np.broadcast_to(step, [local_device_count])
-    scalars = experiment.evaluate(global_step=step_device)
-    experiment.save_eval_embeddings(global_step=step_device)
-
+    # last_evaluated_step = -1
+    # checkpoint_data = experiment.load_checkpoint()
+    # if checkpoint_data is None:
+    #     logging.info('No checkpoint found. Waiting for 10s.')
+    #     time.sleep(10)
+    # step, _ = checkpoint_data
+    # host_id = jax.host_id()
+    # local_device_count = jax.local_device_count()
+    # step_device = np.broadcast_to(step, [local_device_count])
+    # scalars = experiment.evaluate(global_step=step_device)
+    # experiment.save_eval_embeddings(global_step=step_device)
+    experiment.save_embedding(batch_size=128)
 
 
 def main(_):
@@ -135,4 +134,3 @@ def main(_):
 
 if __name__ == '__main__':
     app.run(main)
-

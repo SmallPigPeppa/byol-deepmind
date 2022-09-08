@@ -126,7 +126,7 @@ class EvalExperiment:
 
     def _backbone_fn(
             self,
-            inputs: dataset.Batch,
+            images,
             encoder_class: Text,
             encoder_config: Mapping[Text, Any],
             bn_decay_rate: float,
@@ -140,9 +140,9 @@ class EvalExperiment:
             bn_config=bn_config,
             **encoder_config)
 
-        if self._should_transpose_images():
-            inputs = dataset.transpose_images(inputs)
-        images = dataset.normalize_images(inputs['images'])
+        # if self._should_transpose_images():
+        #     inputs = dataset.transpose_images(inputs)
+        # images = dataset.normalize_images(inputs['images'])
         return model(images, is_training=is_training)
 
     def _classif_fn(
@@ -422,26 +422,16 @@ class EvalExperiment:
 
     def _eval_batch(
             self,
+            images,
             backbone_params: hk.Params,
             classif_params: hk.Params,
             backbone_state: hk.State,
-            inputs: dataset.Batch,
     ) -> LogsDict:
         """Evaluates a batch."""
         embeddings, backbone_state = self.forward_backbone.apply(
-            backbone_params, backbone_state, inputs, is_training=False)
-        logits = self.forward_classif.apply(classif_params, embeddings)
-        labels = hk.one_hot(inputs['labels'], self._num_classes)
-        loss = helpers.softmax_cross_entropy(logits, labels, reduction=None)
-        top1_correct = helpers.topk_accuracy(logits, inputs['labels'], topk=1)
-        top5_correct = helpers.topk_accuracy(logits, inputs['labels'], topk=5)
+            backbone_params, backbone_state, images, is_training=False)
         # NOTE: Returned values will be summed and finally divided by num_samples.
-        return {
-            'eval_loss': loss,
-            'top1_accuracy': top1_correct,
-            'top5_accuracy': top5_correct,
-            'batch_embeddings': embeddings
-        }
+        return embeddings
 
     def _eval_epoch(self, subset: Text, batch_size: int):
         """Evaluates an epoch."""
@@ -523,7 +513,7 @@ class EvalExperiment:
 
         dataset_iterator = dataset.load(
             split,
-            preprocess_mode=dataset.PreprocessMode.PRETRAIN,
+            preprocess_mode=dataset.PreprocessMode.EVAL,
             transpose=self._should_transpose_images(),
             batch_dims=[batch_size])
 
@@ -541,3 +531,100 @@ class EvalExperiment:
             y_eval = np.append(y_eval, y_i, axis=0)
 
         print("x_eval.shape:", x_eval.shape, "\ny_eval.shape:", y_eval.shape)
+
+    def save_embedding(self, batch_size):
+        import tensorflow as tf
+        import os
+        IMG_SIZE = 224
+        data_path = "/share/datasets/torch_ds/imagenet-subset"
+        dataset_name="imagenet-subset"
+        lr=0.0001
+        epochs=100
+        train_dataset = tf.keras.utils.image_dataset_from_directory(
+            directory=os.path.join(data_path, "train"),
+            batch_size=batch_size,
+            image_size=(256, 256),
+        )
+        test_dataset = tf.keras.utils.image_dataset_from_directory(
+            directory=os.path.join(data_path, "val"),
+            batch_size=batch_size,
+            image_size=(256, 256),
+        )
+        train_dataset = train_dataset.prefetch(tf.data.experimental.AUTOTUNE)
+        test_dataset = test_dataset.prefetch(tf.data.experimental.AUTOTUNE)
+
+        transforms = tf.keras.layers.CenterCrop(
+            height=IMG_SIZE, width=IMG_SIZE
+        )
+        train_dataset = train_dataset.map(lambda x, y: (transforms(x), y))
+        test_dataset = test_dataset.map(lambda x, y: (transforms(x), y))
+        train_dataset = train_dataset.map(lambda x, y: (tf.image.convert_image_dtype(x, dtype=tf.float32), y))
+        test_dataset = test_dataset.map(lambda x, y: (tf.image.convert_image_dtype(x, dtype=tf.float32), y))
+        train_dataset = train_dataset.map(lambda x, y: (x / 255., y))
+        test_dataset = test_dataset.map(lambda x, y: (x / 255., y))
+
+        backbone_params = helpers.get_first(self._experiment_state.backbone_params)
+        classif_params = helpers.get_first(self._experiment_state.classif_params)
+        backbone_state = helpers.get_first(self._experiment_state.backbone_state)
+
+        x_train = np.empty((0, 2048))
+        y_train = np.empty((0))
+        for (imgs, labels) in tqdm(train_dataset):
+            embeddings_i = self.eval_batch_jit(
+                imgs,
+                backbone_params,
+                classif_params,
+                backbone_state,
+            )
+            y_i = labels.numpy()
+            x_i = embeddings_i.numpy()
+            x_train = np.append(x_train, x_i, axis=0)
+            y_train = np.append(y_train, y_i, axis=0)
+
+        x_test = np.empty((0, 2048))
+        y_test = np.empty((0))
+        for (imgs, labels) in tqdm(test_dataset):
+            embeddings_i = self.eval_batch_jit(
+                imgs,
+                backbone_params,
+                classif_params,
+                backbone_state,
+            )
+            y_i = labels.numpy()
+            x_i = embeddings_i.numpy()
+            x_test = np.append(x_test, x_i, axis=0)
+            y_test = np.append(y_test, y_i, axis=0)
+        print("x_train.shape:", x_train.shape, "\ny_train.shape:", y_train.shape)
+        print("x_test.shape:", x_test.shape, "\ny_test.shape:", y_test.shape)
+
+        os.makedirs(f'data_pretrained/{dataset_name}/', exist_ok=True)
+        np.save(f'data_pretrained/{dataset_name}/x_train', x_train)
+        np.save(f'data_pretrained/{dataset_name}/x_test', x_test)
+        np.save(f'data_pretrained/{dataset_name}/y_train', y_train)
+        np.save(f'data_pretrained/{dataset_name}/y_test', y_test)
+
+        x_train = np.load(f'data_pretrained/{dataset_name}/x_train.npy')
+        x_test = np.load(f'data_pretrained/{dataset_name}/x_test.npy')
+        y_train = np.load(f'data_pretrained/{dataset_name}/y_train.npy')
+        y_test = np.load(f'data_pretrained/{dataset_name}/y_test.npy')
+        print(x_test.shape, y_test.shape)
+        print(x_train.shape, y_train.shape)
+
+        train_ds = tf.data.Dataset.from_tensor_slices((x_train, y_train))
+        test_ds = tf.data.Dataset.from_tensor_slices((x_test, y_test))
+        test_ds = test_ds.batch(batch_size)
+        train_ds = train_ds.batch(batch_size)
+
+        # create linear model and fit
+        linear_model = tf.keras.models.Sequential(
+            tf.keras.layers.Dense(units=100))
+        linear_model.compile(optimizer=tf.keras.optimizers.Adam(lr),
+                             loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+                             metrics=['accuracy'])
+
+        linear_model.fit(
+            train_ds,
+            epochs=epochs,
+            validation_data=test_ds,
+        )
+

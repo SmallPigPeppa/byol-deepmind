@@ -112,7 +112,7 @@ class EvalExperiment:
         self.forward_backbone = hk.without_apply_rng(
             hk.transform_with_state(backbone_fn))
         self.forward_classif = hk.without_apply_rng(hk.transform(self._classif_fn))
-        self.update_pmap = jax.pmap(self._update_func, axis_name='i')
+        # self.update_pmap = jax.pmap(self._update_func, axis_name='i')
         self.eval_batch_jit = jax.jit(self._eval_batch)
 
         self._is_backbone_training = not self._freeze_backbone

@@ -22,7 +22,7 @@ import functools
 from typing import Any, Generator, Mapping, NamedTuple, Optional, Text, Tuple, Union
 
 from absl import logging
-from acme.jax import utils as acme_utils
+# from acme.jax import utils as acme_utils
 import haiku as hk
 import jax
 import jax.numpy as jnp
@@ -186,71 +186,6 @@ class EvalExperiment:
         self._experiment_state, step, rng = checkpoint_data
         return step, rng
 
-    def _initialize_train(self, rng):
-        """BYOL's _ExperimentState initialization.
-
-        Args:
-          rng: random number generator used to initialize parameters. If working in
-            a multi device setup, this need to be a ShardedArray.
-          dummy_input: a dummy image, used to compute intermediate outputs shapes.
-
-        Returns:
-          Initial EvalExperiment state.
-
-        Raises:
-          RuntimeError: invalid or empty checkpoint.
-        """
-        self._train_input = acme_utils.prefetch(self._build_train_input())
-
-        # Check we haven't already restored params
-        if self._experiment_state is None:
-
-            inputs = next(self._train_input)
-
-            if self._checkpoint_to_evaluate is not None:
-                # Load params from checkpoint
-                checkpoint_data = checkpointing.load_checkpoint(
-                    self._checkpoint_to_evaluate)
-                if checkpoint_data is None:
-                    raise RuntimeError('Invalid checkpoint.')
-                backbone_params = checkpoint_data['experiment_state'].online_params
-                backbone_state = checkpoint_data['experiment_state'].online_state
-                backbone_params = helpers.bcast_local_devices(backbone_params)
-                backbone_state = helpers.bcast_local_devices(backbone_state)
-            else:
-                if not self._allow_train_from_scratch:
-                    raise ValueError(
-                        'No checkpoint specified, but `allow_train_from_scratch` '
-                        'set to False')
-                # Initialize with random parameters
-                logging.info(
-                    'No checkpoint specified, initializing the networks from scratch '
-                    '(dry run mode)')
-                backbone_params, backbone_state = jax.pmap(
-                    functools.partial(self.forward_backbone.init, is_training=True),
-                    axis_name='i')(rng=rng, inputs=inputs)
-
-            init_experiment = jax.pmap(self._make_initial_state, axis_name='i')
-
-            # Init uses the same RNG key on all hosts+devices to ensure everyone
-            # computes the same initial state and parameters.
-            init_rng = jax.random.PRNGKey(self._random_seed)
-            init_rng = helpers.bcast_local_devices(init_rng)
-            self._experiment_state = init_experiment(
-                rng=init_rng,
-                dummy_input=inputs,
-                backbone_params=backbone_params,
-                backbone_state=backbone_state)
-
-            # Clear the backbone optimizer's state when the backbone is frozen.
-            if self._freeze_backbone:
-                self._experiment_state = _EvalExperimentState(
-                    backbone_params=self._experiment_state.backbone_params,
-                    classif_params=self._experiment_state.classif_params,
-                    backbone_state=self._experiment_state.backbone_state,
-                    backbone_opt_state=None,
-                    classif_opt_state=self._experiment_state.classif_opt_state,
-                )
 
     def _make_initial_state(
             self,
@@ -332,84 +267,6 @@ class EvalExperiment:
 
         return embeddings
 
-    def _update_func(
-            self,
-            experiment_state: _EvalExperimentState,
-            global_step: jnp.ndarray,
-            inputs: dataset.Batch,
-    ) -> Tuple[_EvalExperimentState, LogsDict]:
-        """Applies an update to parameters and returns new state."""
-        # This function computes the gradient of the first output of loss_fn and
-        # passes through the other arguments unchanged.
-
-        # Gradient of the first output of _loss_fn wrt the backbone (arg 0) and the
-        # classifier parameters (arg 1). The auxiliary outputs are returned as-is.
-        grad_loss_fn = jax.grad(self._loss_fn, has_aux=True, argnums=(0, 1))
-
-        grads, aux_outputs = grad_loss_fn(
-            experiment_state.backbone_params,
-            experiment_state.classif_params,
-            experiment_state.backbone_state,
-            inputs,
-        )
-        backbone_grads, classifier_grads = grads
-        train_loss, new_backbone_state = aux_outputs
-        classifier_grads = jax.lax.psum(classifier_grads, axis_name='i')
-
-        # Compute the decayed learning rate
-        learning_rate = schedules.learning_schedule(
-            global_step,
-            batch_size=self._batch_size,
-            total_steps=self._max_steps,
-            **self._lr_schedule_config)
-
-        # Compute and apply updates via our optimizer.
-        classif_updates, new_classif_opt_state = \
-            self._optimizer(learning_rate).update(
-                classifier_grads,
-                experiment_state.classif_opt_state)
-
-        new_classif_params = optax.apply_updates(experiment_state.classif_params,
-                                                 classif_updates)
-
-        if self._freeze_backbone:
-            del backbone_grads, new_backbone_state  # Unused
-            # The backbone is not updated.
-            new_backbone_params = experiment_state.backbone_params
-            new_backbone_opt_state = None
-            new_backbone_state = experiment_state.backbone_state
-        else:
-            backbone_grads = jax.lax.psum(backbone_grads, axis_name='i')
-
-            # Compute and apply updates via our optimizer.
-            backbone_updates, new_backbone_opt_state = \
-                self._optimizer(learning_rate).update(
-                    backbone_grads,
-                    experiment_state.backbone_opt_state)
-
-            new_backbone_params = optax.apply_updates(
-                experiment_state.backbone_params, backbone_updates)
-
-        experiment_state = _EvalExperimentState(
-            new_backbone_params,
-            new_classif_params,
-            new_backbone_state,
-            new_backbone_opt_state,
-            new_classif_opt_state,
-        )
-
-        # Scalars to log (note: we log the mean across all hosts/devices).
-        scalars = {'train_loss': train_loss}
-        scalars = jax.lax.pmean(scalars, axis_name='i')
-
-        return experiment_state, scalars
-
-    #                  _
-    #   _____   ____ _| |
-    #  / _ \ \ / / _` | |
-    # |  __/\ V / (_| | |
-    #  \___| \_/ \__,_|_|
-    #
 
     def evaluate(self, global_step, **unused_args):
         """See base class."""
@@ -433,104 +290,9 @@ class EvalExperiment:
         # NOTE: Returned values will be summed and finally divided by num_samples.
         return embeddings
 
-    def _eval_epoch(self, subset: Text, batch_size: int):
-        """Evaluates an epoch."""
-        num_samples = 0.
-        summed_scalars = None
 
-        backbone_params = helpers.get_first(self._experiment_state.backbone_params)
-        classif_params = helpers.get_first(self._experiment_state.classif_params)
-        backbone_state = helpers.get_first(self._experiment_state.backbone_state)
-        split = dataset.Split.from_string(subset)
 
-        dataset_iterator = dataset.load(
-            split,
-            preprocess_mode=dataset.PreprocessMode.EVAL,
-            transpose=self._should_transpose_images(),
-            batch_dims=[batch_size])
 
-        for inputs in dataset_iterator:
-            num_samples += inputs['labels'].shape[0]
-            scalars = self.eval_batch_jit(
-                backbone_params,
-                classif_params,
-                backbone_state,
-                inputs,
-            )
-
-            # Accumulate the sum of scalars for each step.
-            scalars = jax.tree_map(lambda x: jnp.sum(x, axis=0), scalars)
-            if summed_scalars is None:
-                summed_scalars = scalars
-            else:
-                summed_scalars = jax.tree_map(jnp.add, summed_scalars, scalars)
-
-        mean_scalars = jax.tree_map(lambda x: x / num_samples, summed_scalars)
-        return mean_scalars
-
-    def save_eval_embeddings(self, subset: Text, batch_size: int):
-        """Evaluates an epoch."""
-        num_samples = 0.
-
-        backbone_params = helpers.get_first(self._experiment_state.backbone_params)
-        classif_params = helpers.get_first(self._experiment_state.classif_params)
-        backbone_state = helpers.get_first(self._experiment_state.backbone_state)
-        split = dataset.Split.from_string(subset)
-        x_eval = np.empty((0, 2048))
-        y_eval = np.empty((0))
-
-        dataset_iterator = dataset.load(
-            split,
-            preprocess_mode=dataset.PreprocessMode.EVAL,
-            transpose=self._should_transpose_images(),
-            batch_dims=[batch_size])
-
-        for inputs in dataset_iterator:
-            num_samples += inputs['labels'].shape[0]
-            scalars = self.eval_batch_jit(
-                backbone_params,
-                classif_params,
-                backbone_state,
-                inputs,
-            )
-            y_i = inputs['labels'].numpy()
-            x_i = scalars["batch_embeddings"].numpy()
-            x_eval = np.append(x_eval, x_i, axis=0)
-            y_eval = np.append(y_eval, y_i, axis=0)
-
-        print("x_eval.shape:", x_eval.shape, "\ny_eval.shape:", y_eval.shape)
-
-    def save_train_embeddings(self, subset: Text, batch_size: int):
-        """Evaluates an epoch."""
-        num_samples = 0.
-
-        backbone_params = helpers.get_first(self._experiment_state.backbone_params)
-        classif_params = helpers.get_first(self._experiment_state.classif_params)
-        backbone_state = helpers.get_first(self._experiment_state.backbone_state)
-        split = dataset.Split.from_string(subset)
-        x_eval = np.empty((0, 2048))
-        y_eval = np.empty((0))
-
-        dataset_iterator = dataset.load(
-            split,
-            preprocess_mode=dataset.PreprocessMode.EVAL,
-            transpose=self._should_transpose_images(),
-            batch_dims=[batch_size])
-
-        for inputs in dataset_iterator:
-            num_samples += inputs['labels'].shape[0]
-            scalars = self.eval_batch_jit(
-                backbone_params,
-                classif_params,
-                backbone_state,
-                inputs,
-            )
-            y_i = inputs['labels'].numpy()
-            x_i = scalars["batch_embeddings"].numpy()
-            x_eval = np.append(x_eval, x_i, axis=0)
-            y_eval = np.append(y_eval, y_i, axis=0)
-
-        print("x_eval.shape:", x_eval.shape, "\ny_eval.shape:", y_eval.shape)
 
     def save_embedding(self, batch_size):
         import tensorflow as tf

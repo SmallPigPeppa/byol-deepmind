@@ -361,8 +361,7 @@ class EvalExperiment:
 
     def save_embedding(self, batch_size):
 
-        checkpoint_data = checkpointing.load_checkpoint(
-            self._checkpoint_to_evaluate)
+        checkpoint_data = checkpointing.load_checkpoint("/share/wenzhuoliu/code/debug/byol-deepmind/byol/ckpt/pretrain_res50x1.pkl")
         if checkpoint_data is None:
             raise RuntimeError('Invalid checkpoint.')
         backbone_params = checkpoint_data['experiment_state'].online_params
@@ -410,7 +409,6 @@ class EvalExperiment:
             embeddings_i = self.eval_batch_jit(
                 imgs,
                 backbone_params,
-                classif_params,
                 backbone_state,
             )
             y_i = labels.numpy()

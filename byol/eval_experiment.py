@@ -374,8 +374,8 @@ class EvalExperiment:
         import os
         import numpy as np
         IMG_SIZE = 224
-        data_path = "/share/wenzhuoliu/torch_ds/imagenet-subset"
-        dataset_name="imagenet-subset"
+        data_path = "/share/wenzhuoliu/torch_ds/imagenet100"
+        dataset_name="imagenet100"
         lr=0.0001
         epochs=100
         train_dataset = tf.keras.utils.image_dataset_from_directory(

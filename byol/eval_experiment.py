@@ -372,6 +372,7 @@ class EvalExperiment:
         import tensorflow as tf
         import tensorflow_datasets as tfds
         import os
+        import numpy as np
         IMG_SIZE = 224
         data_path = "/share/wenzhuoliu/torch_ds/imagenet-subset"
         dataset_name="imagenet-subset"
@@ -416,7 +417,7 @@ class EvalExperiment:
             embeddings_i, backbone_state = self.forward_backbone.apply(
                 backbone_params, backbone_state, imgs, is_training=False)
             y_i = labels
-            x_i = embeddings_i.numpy()
+            x_i = np.array(embeddings_i.numpy)
             x_train = np.append(x_train, x_i, axis=0)
             y_train = np.append(y_train, y_i, axis=0)
 

@@ -370,6 +370,7 @@ class EvalExperiment:
         # backbone_state = helpers.bcast_local_devices(backbone_state)
 
         import tensorflow as tf
+        import tensorflow_datasets as tfds
         import os
         IMG_SIZE = 224
         data_path = "/share/wenzhuoliu/torch_ds/imagenet-subset"
@@ -399,6 +400,7 @@ class EvalExperiment:
         train_dataset = train_dataset.map(lambda x, y: (x / 255., y))
         test_dataset = test_dataset.map(lambda x, y: (x / 255., y))
 
+        train_dataset= tfds.as_numpy(train_dataset)
         # backbone_params = helpers.get_first(self._experiment_state.backbone_params)
         # classif_params = helpers.get_first(self._experiment_state.classif_params)
         # backbone_state = helpers.get_first(self._experiment_state.backbone_state)

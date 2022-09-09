@@ -16,7 +16,7 @@
 
 from typing import Text
 
-from utils import dataset
+from byol.utils import dataset
 
 
 def get_config(checkpoint_to_evaluate: Text, batch_size: int):

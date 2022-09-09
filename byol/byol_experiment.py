@@ -29,14 +29,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 
-from utils import augmentations
-from utils import checkpointing
-from utils import dataset
-from utils import helpers
-from utils import networks
-from utils import optimizers
-from utils import schedules
-
+from byol.utils import augmentations, checkpointing, dataset, optimizers, helpers, schedules, networks
 
 # Type declarations.
 LogsDict = Mapping[Text, jnp.ndarray]

@@ -402,6 +402,7 @@ class EvalExperiment:
         test_dataset = test_dataset.map(lambda x, y: (x / 255., y))
 
         train_dataset= tfds.as_numpy(train_dataset)
+        test_dataset= tfds.as_numpy(test_dataset)
         # backbone_params = helpers.get_first(self._experiment_state.backbone_params)
         # classif_params = helpers.get_first(self._experiment_state.classif_params)
         # backbone_state = helpers.get_first(self._experiment_state.backbone_state)
@@ -429,8 +430,8 @@ class EvalExperiment:
                 backbone_params,
                 backbone_state,
             )
-            y_i = labels.numpy()
-            x_i = embeddings_i.numpy()
+            y_i = labels
+            x_i = np.array(embeddings_i)
             x_test = np.append(x_test, x_i, axis=0)
             y_test = np.append(y_test, y_i, axis=0)
         print("x_train.shape:", x_train.shape, "\ny_train.shape:", y_train.shape)
